@@ -2534,7 +2534,9 @@ describe('document', function() {
         const doc = docs[0];
         doc.other = 'something';
         doc.subdocs[1].name = 'test2';
-        assert.equal(doc.validateSync(undefined, { validateModifiedOnly: true }), null);
+        assert.equal(doc.validateSync({ validateModifiedOnly: true }), null);
+        assert.equal(doc.validateSync('other'), null);
+        assert.ok(doc.validateSync('other title').errors['title']);
         doc.save({ validateModifiedOnly: true }, function(error) {
           assert.equal(error, null);
           done();
@@ -2551,7 +2553,7 @@ describe('document', function() {
         assert.equal(createError, null);
         const doc = docs[0];
         doc.title = '';
-        assert.ok(doc.validateSync(undefined, { validateModifiedOnly: true }).errors);
+        assert.ok(doc.validateSync({ validateModifiedOnly: true }).errors);
         doc.save({ validateModifiedOnly: true }, function(error) {
           assert.ok(error.errors);
           done();
@@ -9911,6 +9913,30 @@ describe('document', function() {
     });
   });
 
+  it('with virtual populate (gh-10148)', function() {
+    const childSchema = Schema({ name: String, parentId: 'ObjectId' });
+    childSchema.virtual('parent', {
+      ref: 'Parent',
+      localField: 'parentId',
+      foreignField: '_id',
+      justOne: true
+    });
+    const Child = db.model('Child', childSchema);
+
+    const Parent = db.model('Parent', Schema({ name: String }));
+
+    return co(function*() {
+      const p = yield Parent.create({ name: 'Anakin' });
+      yield Child.create({ name: 'Luke', parentId: p._id });
+
+      const res = yield Child.findOne().populate('parent');
+      assert.equal(res.parent.name, 'Anakin');
+      const docs = res.$getPopulatedDocs();
+      assert.equal(docs.length, 1);
+      assert.equal(docs[0].name, 'Anakin');
+    });
+  });
+
   it('handles paths named `db` (gh-9798)', function() {
     const schema = new Schema({
       db: String
@@ -10206,4 +10232,241 @@ describe('document', function() {
       assert.ok(resultObject.child.map instanceof Map);
     });
   });
+
+  it('does not double validate paths under mixed objects (gh-10141)', function() {
+    let validatorCallCount = 0;
+    const Test = db.model('Test', Schema({
+      name: String,
+      object: {
+        type: Object,
+        validate: () => {
+          validatorCallCount++;
+          return true;
+        }
+      }
+    }));
+
+    return co(function*() {
+      const doc = yield Test.create({ name: 'test', object: { answer: 42 } });
+
+      validatorCallCount = 0;
+      doc.set('object.question', 'secret');
+      doc.set('object.answer', 0);
+      yield doc.validate();
+      assert.equal(validatorCallCount, 0);
+    });
+  });
+
+  it('clears child document modified when setting map path underneath single nested (gh-10295)', function() {
+    const SecondMapSchema = new mongoose.Schema({
+      data: { type: Map, of: Number, default: {}, _id: false }
+    });
+
+    const FirstMapSchema = new mongoose.Schema({
+      data: { type: Map, of: SecondMapSchema, default: {}, _id: false }
+    });
+
+    const NestedSchema = new mongoose.Schema({
+      data: { type: Map, of: SecondMapSchema, default: {}, _id: false }
+    });
+
+    const TestSchema = new mongoose.Schema({
+      _id: Number,
+      firstMap: { type: Map, of: FirstMapSchema, default: {}, _id: false },
+      nested: { type: NestedSchema, default: {}, _id: false }
+    });
+
+    const Test = db.model('Test', TestSchema);
+
+    return co(function*() {
+      const doc = yield Test.create({ _id: Date.now() });
+
+      doc.nested.data.set('second', {});
+      assert.ok(doc.modifiedPaths().indexOf('nested.data.second') !== -1, doc.modifiedPaths());
+      yield doc.save();
+
+      doc.nested.data.get('second').data.set('final', 3);
+      assert.ok(doc.modifiedPaths().indexOf('nested.data.second.data.final') !== -1, doc.modifiedPaths());
+      yield doc.save();
+
+      const fromDb = yield Test.findById(doc).lean();
+      assert.equal(fromDb.nested.data.second.data.final, 3);
+    });
+  });
+
+  it('avoids infinite recursion when setting single nested subdoc to array (gh-10351)', function() {
+    const userInfoSchema = new mongoose.Schema({ _id: String }, { _id: false });
+    const observerSchema = new mongoose.Schema({ user: {} }, { _id: false });
+
+    const entrySchema = new mongoose.Schema({
+      creator: userInfoSchema,
+      observers: [observerSchema]
+    });
+
+    entrySchema.pre('save', function(next) {
+      this.observers = [{ user: this.creator }];
+
+      next();
+    });
+
+    const Test = db.model('Test', entrySchema);
+
+    return co(function*() {
+      const entry = new Test({
+        creator: { _id: 'u1' }
+      });
+
+      yield entry.save();
+
+      const fromDb = yield Test.findById(entry);
+      assert.equal(fromDb.observers.length, 1);
+    });
+  });
+
+  describe('virtuals `pathsToSkip` (gh-10120)', () => {
+    it('adds support for `pathsToSkip` for virtuals feat-10120', function() {
+      const schema = new mongoose.Schema({
+        name: String,
+        age: Number,
+        nested: {
+          test: String
+        }
+      });
+      schema.virtual('nameUpper').get(function() { return this.name.toUpperCase(); });
+      schema.virtual('answer').get(() => 42);
+      schema.virtual('nested.hello').get(() => 'world');
+
+      const Model = db.model('Person', schema);
+      const doc = new Model({ name: 'Jean-Luc Picard', age: 59, nested: { test: 'hello' } });
+      let obj = doc.toObject({ virtuals: { pathsToSkip: ['answer'] } });
+      assert.ok(obj.nameUpper);
+      assert.equal(obj.answer, null);
+      assert.equal(obj.nested.hello, 'world');
+      obj = doc.toObject({ virtuals: { pathsToSkip: ['nested.hello'] } });
+      assert.equal(obj.nameUpper, 'JEAN-LUC PICARD');
+      assert.equal(obj.answer, 42);
+      assert.equal(obj.nested.hello, null);
+    });
+
+    it('supports passing a list of virtuals to `toObject()` (gh-10120)', function() {
+      const schema = new mongoose.Schema({
+        name: String,
+        age: Number,
+        nested: {
+          test: String
+        }
+      });
+      schema.virtual('nameUpper').get(function() { return this.name.toUpperCase(); });
+      schema.virtual('answer').get(() => 42);
+      schema.virtual('nested.hello').get(() => 'world');
+
+      const Model = db.model('Person', schema);
+
+      const doc = new Model({ name: 'Jean-Luc Picard', age: 59, nested: { test: 'hello' } });
+
+      let obj = doc.toObject({ virtuals: true });
+      assert.equal(obj.nameUpper, 'JEAN-LUC PICARD');
+      assert.equal(obj.answer, 42);
+      assert.equal(obj.nested.hello, 'world');
+
+      obj = doc.toObject({ virtuals: ['answer'] });
+      assert.ok(!obj.nameUpper);
+      assert.equal(obj.answer, 42);
+      assert.equal(obj.nested.hello, null);
+
+      obj = doc.toObject({ virtuals: ['nameUpper'] });
+      assert.equal(obj.nameUpper, 'JEAN-LUC PICARD');
+      assert.equal(obj.answer, null);
+      assert.equal(obj.nested.hello, null);
+
+      obj = doc.toObject({ virtuals: ['nested.hello'] });
+      assert.equal(obj.nameUpper, null);
+      assert.equal(obj.answer, null);
+      assert.equal(obj.nested.hello, 'world');
+    });
+  });
+  describe('validation `pathsToSkip` (gh-10230)', () => {
+    it('support `pathsToSkip` option for `Document#validate()`', function() {
+      return co(function*() {
+        const User = getUserModel();
+        const user = new User();
+
+        const err1 = yield user.validate({ pathsToSkip: ['age'] }).then(() => null, err => err);
+        assert.deepEqual(Object.keys(err1.errors), ['name']);
+
+        const err2 = yield user.validate({ pathsToSkip: ['name'] }).then(() => null, err => err);
+        assert.deepEqual(Object.keys(err2.errors), ['age']);
+      });
+    });
+
+    it('support `pathsToSkip` option for `Document#validate()`', function() {
+      return co(function*() {
+        const User = getUserModel();
+        const user = new User();
+
+        const err1 = yield user.validate({ pathsToSkip: ['age'] }).then(() => null, err => err);
+        assert.deepEqual(Object.keys(err1.errors), ['name']);
+
+        const err2 = yield user.validate({ pathsToSkip: ['name'] }).then(() => null, err => err);
+        assert.deepEqual(Object.keys(err2.errors), ['age']);
+      });
+    });
+
+    it('support `pathsToSkip` option for `Document#validateSync()`', () => {
+      const User = getUserModel();
+
+      const user = new User();
+
+      const err1 = user.validateSync({ pathsToSkip: ['age'] });
+      assert.deepEqual(Object.keys(err1.errors), ['name']);
+
+      const err2 = user.validateSync({ pathsToSkip: ['name'] });
+      assert.deepEqual(Object.keys(err2.errors), ['age']);
+    });
+
+    // skip until gh-10367 is implemented
+    xit('support `pathsToSkip` option for `Model.validate()`', () => {
+      return co(function*() {
+        const User = getUserModel();
+        const err1 = yield User.validate({}, { pathsToSkip: ['age'] });
+        assert.deepEqual(Object.keys(err1.errors), ['name']);
+
+        const err2 = yield User.validate({}, { pathsToSkip: ['name'] });
+        assert.deepEqual(Object.keys(err2.errors), ['age']);
+      });
+    });
+
+    it('`pathsToSkip` accepts space separated paths', () => {
+      const userSchema = Schema({
+        name: { type: String, required: true },
+        age: { type: Number, required: true },
+        country: { type: String, required: true },
+        rank: { type: String, required: true }
+      });
+
+      const User = db.model('User', userSchema);
+      return co(function* () {
+        const user = new User({ name: 'Sam', age: 26 });
+
+        const err1 = user.validateSync({ pathsToSkip: 'country rank' });
+        assert.ok(err1 == null);
+
+        const err2 = yield user.validate({ pathsToSkip: 'country rank' }).then(() => null, err => err);
+        assert.ok(err2 == null);
+      });
+    });
+
+
+    function getUserModel() {
+      const userSchema = Schema({
+        name: { type: String, required: true },
+        age: { type: Number, required: true },
+        rank: String
+      });
+
+      const User = db.model('User', userSchema);
+      return User;
+    }
+  });
+
 });

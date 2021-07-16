@@ -441,7 +441,7 @@ describe('schema', function() {
         threw = true;
         assert.equal(error.name, 'CastError');
         assert.equal(error.message,
-          'Cast to [[Number]] failed for value "[["abcd"]]" at path "nums.0"');
+          'Cast to [[Number]] failed for value "[["abcd"]]" (type string) at path "nums.0"');
       }
       assert.ok(threw);
 
@@ -1308,6 +1308,31 @@ describe('schema', function() {
       assert.ok(s.s.hooks._pres.get('save'));
 
       done();
+    });
+
+    it('overwrites existing paths (gh-10203)', function() {
+      const baseSchema = new Schema({
+        username: {
+          type: String,
+          required: false
+        }
+      });
+
+      const userSchema = new Schema({
+        email: {
+          type: String,
+          required: true
+        },
+        username: {
+          type: String,
+          required: true
+        }
+      });
+
+      const realSchema = baseSchema.clone();
+      realSchema.add(userSchema);
+
+      assert.ok(realSchema.path('username').isRequired);
     });
   });
 
@@ -2579,6 +2604,27 @@ describe('schema', function() {
     assert.equal(schema.virtuals.displayAs.applyGetters(null, { name: 'test' }), 'test');
   });
 
+  it('loadClass with static getter (gh-10436)', function() {
+    const schema = new mongoose.Schema({
+      firstName: String,
+      lastName: String
+    });
+
+    class UserClass extends mongoose.Model {
+      get fullName() {
+        return `${this.firstName} ${this.lastName}`;
+      }
+
+      static get greeting() {
+        return 'Hello World';
+      }
+    }
+
+    const User = mongoose.model(UserClass, schema);
+
+    assert.equal(User.greeting, 'Hello World');
+  });
+
   it('supports setting `ref` on array SchemaType (gh-10029)', function() {
     const testSchema = new mongoose.Schema({
       doesntpopulate: {
@@ -2593,5 +2639,47 @@ describe('schema', function() {
 
     assert.equal(testSchema.path('doesntpopulate.$').options.ref, 'features');
     assert.equal(testSchema.path('populatescorrectly.$').options.ref, 'features');
+  });
+
+  it('path() gets single nested paths within document arrays (gh-10164)', function() {
+    const schema = mongoose.Schema({
+      field1: [mongoose.Schema({
+        field2: mongoose.Schema({
+          field3: Boolean
+        })
+      })]
+    });
+
+    assert.equal(schema.path('field1').instance, 'Array');
+    assert.equal(schema.path('field1.field2').instance, 'Embedded');
+    assert.equal(schema.path('field1.field2.field3').instance, 'Boolean');
+  });
+
+  it('supports creating nested paths underneath document arrays (gh-10193)', function() {
+    const DynamicTextMatchFeaturesSchema = new Schema({ css: { color: String } });
+
+    const ElementSchema = new Schema({
+      image: { type: String },
+      possibleElements: [{
+        textMatchFeatures: {
+          dynamic: DynamicTextMatchFeaturesSchema
+        }
+      }]
+    });
+
+    assert.ok(ElementSchema.path('possibleElements').schema.path('textMatchFeatures.dynamic').schema.nested['css']);
+  });
+
+  it('propagates map `ref` down to individual map elements (gh-10329)', function() {
+    const TestSchema = new mongoose.Schema({
+      testprop: {
+        type: Map,
+        of: Number,
+        ref: 'OtherModel'
+      }
+    });
+
+    assert.equal(TestSchema.path('testprop.$*').instance, 'Number');
+    assert.equal(TestSchema.path('testprop.$*').options.ref, 'OtherModel');
   });
 });

@@ -7,7 +7,8 @@ interface QueryHelpers {
 const schema: Schema<ITest, Model<ITest, QueryHelpers>> = new Schema({
   name: { type: 'String' },
   tags: [String],
-  docs: [{ nested: { id: Number } }]
+  docs: [{ nested: { id: Number, tags: [String] } }],
+  endDate: Date
 });
 
 schema.query.byName = function(name: string): Query<any, ITest, QueryHelpers> & QueryHelpers {
@@ -16,6 +17,7 @@ schema.query.byName = function(name: string): Query<any, ITest, QueryHelpers> & 
 
 interface ISubdoc extends Document {
   id?: number;
+  tags?: string[];
 }
 
 interface ITest extends Document {
@@ -24,6 +26,7 @@ interface ITest extends Document {
   parent?: Types.ObjectId;
   tags?: string[];
   docs?: ISubdoc[];
+  endDate?: Date;
 }
 
 const Test = model<ITest, Model<ITest, QueryHelpers>>('Test', schema);
@@ -70,6 +73,14 @@ Test.findOneAndUpdate({ name: 'test' }, { $addToSet: { tags: 'each' } });
 Test.findOneAndUpdate({ name: 'test' }, { $push: { tags: 'each' } });
 Test.findOneAndUpdate({ name: 'test' }, { $pull: { docs: { 'nested.id': 1 } } });
 
+Test.findOneAndUpdate({ name: 'test', 'docs.id': 1 }, { $pull: { 'docs.$.tags': 'foo' } });
+
+const update = Math.random() > 0.5 ? { $unset: { 'docs.0': 1 } } : { age: 55 };
+Test.findOneAndUpdate({ name: 'test' }, update);
+
+Test.findOneAndUpdate({ name: 'test' }, { $currentDate: { endDate: true } });
+Test.findOneAndUpdate({ name: 'test' }, [{ $set: { endDate: true } }]);
+
 Test.findByIdAndUpdate({ name: 'test' }, { name: 'test2' }, (err, doc) => console.log(doc));
 
 const query: Query<ITest | null, ITest> = Test.findOne();
@@ -89,4 +100,10 @@ function testGenericQuery(): void {
   async function findSomething<T>(model: Model<CommonInterface<T>>): Promise<CommonInterface<T>> {
     return model.findOne({ something: 'test' }).orFail().exec();
   }
+}
+
+function eachAsync(): void {
+  Test.find().cursor().eachAsync((doc: ITest) => console.log(doc.name));
+
+  Test.find().cursor().eachAsync((docs: ITest[]) => console.log(docs[0].name), { batchSize: 2 });
 }

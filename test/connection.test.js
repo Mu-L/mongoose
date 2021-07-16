@@ -11,12 +11,27 @@ const Q = require('q');
 const assert = require('assert');
 const co = require('co');
 const mongodb = require('mongodb');
-const server = require('./common').server;
+
+const Server = require('./connection_server');
+const server = new Server('mongod', {
+  bind_ip: '127.0.0.1',
+  port: 27000,
+  dbpath: './data/db/27000'
+});
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
 
 const uri = 'mongodb://localhost:27017/mongoose_test';
+
+before(function() {
+  return server.purge();
+});
+
+after(function() {
+  this.timeout(15000);
+  return server.stop();
+});
 
 /**
  * Test.
@@ -1298,5 +1313,17 @@ describe('connections:', function() {
       const errorOnDisconnect = yield disconnect().then(() => null, err => err);
       assert.ifError(errorOnDisconnect);
     });
+  });
+  it('Connection id should be scoped per Mongoose Instance (gh-10025)', function() {
+    const m = new mongoose.Mongoose;
+    const conn = m.createConnection();
+    const m1 = new mongoose.Mongoose;
+    const conn2 = m1.createConnection();
+    const conn3 = m.createConnection();
+    assert.deepStrictEqual(m.connection.id, 0);
+    assert.deepStrictEqual(conn.id, m.connection.id + 1);
+    assert.deepStrictEqual(m1.connection.id, 0);
+    assert.deepStrictEqual(conn2.id, m1.connection.id + 1);
+    assert.deepStrictEqual(conn3.id, m.connection.id + 2);
   });
 });

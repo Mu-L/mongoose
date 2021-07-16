@@ -58,9 +58,9 @@ describe('validation docs', function() {
   /**
    * Mongoose has several built-in validators.
    *
-   * - All [SchemaTypes](./schematypes.html) have the built-in [required](./api.html#schematype_SchemaType-required) validator. The required validator uses the [SchemaType's `checkRequired()` function](./api.html#schematype_SchemaType-checkRequired) to determine if the value satisfies the required validator.
-   * - [Numbers](./api.html#schema-number-js) have [`min` and `max`](./schematypes.html#number-validators) validators.
-   * - [Strings](./api.html#schema-string-js) have [`enum`, `match`, `minLength`, and `maxLength`](./schematypes.html#string-validators) validators.
+   * - All [SchemaTypes](/docs/schematypes.html) have the built-in [required](./api.html#schematype_SchemaType-required) validator. The required validator uses the [SchemaType's `checkRequired()` function](./api.html#schematype_SchemaType-checkRequired) to determine if the value satisfies the required validator.
+   * - [Numbers](/docs/schematypes.html#numbers) have [`min` and `max`](./schematypes.html#number-validators) validators.
+   * - [Strings](/docs/schematypes.html#strings) have [`enum`, `match`, `minLength`, and `maxLength`](./schematypes.html#string-validators) validators.
    *
    * Each of the validator links above provide more information about how to enable them and customize their error messages.
    */
@@ -107,6 +107,50 @@ describe('validation docs', function() {
     badBreakfast.bacon = null;
     error = badBreakfast.validateSync();
     assert.equal(error.errors['bacon'].message, 'Why no bacon?');
+    // acquit:ignore:start
+    done();
+    // acquit:ignore:end
+  });
+
+  /**
+   * You can configure the error message for individual validators in your schema. There are two equivalent
+   * ways to set the validator error message:
+   *
+   * - Array syntax: `min: [6, 'Must be at least 6, got {VALUE}']`
+   * - Object syntax: `enum: { values: ['Coffee', 'Tea'], message: '{VALUE} is not supported' }`
+   *
+   * Mongoose also supports rudimentary templating for error messages.
+   * Mongoose replaces `{VALUE}` with the value being validated.
+   */
+
+  it('Custom Error Messages', function(done) {
+    const breakfastSchema = new Schema({
+      eggs: {
+        type: Number,
+        min: [6, 'Must be at least 6, got {VALUE}'],
+        max: 12
+      },
+      drink: {
+        type: String,
+        enum: {
+          values: ['Coffee', 'Tea'],
+          message: '{VALUE} is not supported'
+        }
+      }
+    });
+    // acquit:ignore:start
+    db.deleteModel(/Breakfast/);
+    // acquit:ignore:end
+    const Breakfast = db.model('Breakfast', breakfastSchema);
+
+    const badBreakfast = new Breakfast({
+      eggs: 2,
+      drink: 'Milk'
+    });
+    let error = badBreakfast.validateSync();
+    assert.equal(error.errors['eggs'].message,
+      'Must be at least 6, got 2');
+    assert.equal(error.errors['drink'].message, 'Milk is not supported');
     // acquit:ignore:start
     done();
     // acquit:ignore:end
@@ -332,7 +376,7 @@ describe('validation docs', function() {
     // acquit:ignore:start
     assert.equal(err.errors['numWheels'].name, 'CastError');
     assert.equal(err.errors['numWheels'].message,
-      'Cast to Number failed for value "not a number" at path "numWheels"');
+      'Cast to Number failed for value "not a number" (type string) at path "numWheels"');
     // acquit:ignore:end
   });
 
@@ -581,36 +625,6 @@ describe('validation docs', function() {
         done();
         // acquit:ignore:end
       });
-    });
-  });
-
-  /**
-   * New in 4.8.0: update validators also run on `$push` and `$addToSet`
-   */
-
-  it('On $push and $addToSet', function(done) {
-    const testSchema = new Schema({
-      numbers: [{ type: Number, max: 0 }],
-      docs: [{
-        name: { type: String, required: true }
-      }]
-    });
-
-    const Test = db.model('TestPush', testSchema);
-
-    const update = {
-      $push: {
-        numbers: 1,
-        docs: { name: null }
-      }
-    };
-    const opts = { runValidators: true };
-    Test.updateOne({}, update, opts, function(error) {
-      assert.ok(error.errors['numbers']);
-      assert.ok(error.errors['docs']);
-      // acquit:ignore:start
-      done();
-      // acquit:ignore:end
     });
   });
 });
